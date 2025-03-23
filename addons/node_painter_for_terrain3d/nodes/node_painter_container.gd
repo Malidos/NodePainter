@@ -1,6 +1,6 @@
 @tool
 ## A Node to contain all NodePainter Shapes and to process them into a Heightmap for Terrain3D.
-## Nodes are processed in order of the SceneTree.
+## Nodes are processed in order of the SceneTree and Textures will be rescaled to the largest appearing size.
 class_name NodePainterContainer
 extends Node3D
 
@@ -15,6 +15,8 @@ extends Node3D
 var terrainNode: Terrain3D
 var rd_device: RenderingDevice
 var shader: RID
+var largest_image : int = 16
+var images : Array[Image]
 
 # Stops a wave of updates while moving nodes or using sliders
 var update_scheduled := false
@@ -103,6 +105,22 @@ func _generate_new_heightmap() -> void:
 	shape_uniform.binding = 2
 	shape_uniform.add_id(shape_buffer)
 	
+	var stamps := get_stamps_rid()
+	rids.push_back(stamps)
+	
+	var stamp_sampler := RDSamplerState.new()
+	stamp_sampler.repeat_u = 3
+	stamp_sampler.repeat_v = 3
+	stamp_sampler.repeat_w = 3
+	var ssid := rd_device.sampler_create(stamp_sampler)
+	rids.push_back(ssid)
+	
+	var stamp_uniform := RDUniform.new()
+	stamp_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE
+	stamp_uniform.binding = 3
+	stamp_uniform.add_id(ssid)
+	stamp_uniform.add_id(stamps)
+	
 	
 	if terrainNode and shape_data_buffer.size() > 8:
 		# retrive Region data
@@ -144,7 +162,7 @@ func _generate_new_heightmap() -> void:
 			heightmap_uniform.binding = 0
 			heightmap_uniform.add_id(heightmap_rid)
 			
-			var region_set := rd_device.uniform_set_create([heightmap_uniform, region_uniform, shape_uniform], shader, 0)
+			var region_set := rd_device.uniform_set_create([heightmap_uniform, region_uniform, shape_uniform, stamp_uniform], shader, 0)
 			
 			# Attatch the region to the compute pipeline
 			var compute_list := rd_device.compute_list_begin()
@@ -193,6 +211,8 @@ func _exit_tree():
 func get_shape_data_buffer() -> PackedByteArray:
 	var childs := get_children()
 	var edit_nodes := childs.filter(func(node): return node is NodePainterShape and node.shape)
+	images = []
+	largest_image = 128
 	
 	# Generate the shape buffer data
 	var shape_count : int = 0
@@ -263,8 +283,78 @@ func get_shape_data_buffer() -> PackedByteArray:
 				shape_data_buffer.push_back(p.x)
 				shape_data_buffer.push_back(p.y)
 				shape_data_buffer.push_back(p.z)
+		
+		elif shape.shape is NodePainterStamp and shape.shape.heightmap != null:
+			shape_count += 1
+			var img : Image = shape.shape.heightmap
+			
+			shape_data_buffer.push_back(4.0) # Shape is type Stamp
+			shape_data_buffer.push_back(shape.shape.transition_size)
+			shape_data_buffer.push_back( float(shape.shape.transition_type) ) # "Transition Type"
+			shape_data_buffer.push_back(shape.scale.x)
+			shape_data_buffer.push_back(shape.scale.z)
+			shape_data_buffer.push_back(shape.rotation.y)
+			shape_data_buffer.push_back(shape.global_position.x)
+			shape_data_buffer.push_back(shape.global_position.z)
+			shape_data_buffer.push_back(shape.global_position.y)
+			shape_data_buffer.push_back(shape.shape.height)
+			shape_data_buffer.push_back(shape.shape.size)
+			
+			if images.has(img):
+				shape_data_buffer.push_back(images.find(img))
+			else:
+				shape_data_buffer.push_back(images.size())
+				images.push_back(img)
+			
+			largest_image = max(largest_image, max(img.get_height(), img.get_width()))
 	
 	var shape_bytes := PackedInt32Array([shape_count]).to_byte_array()
 	shape_bytes.append_array( shape_data_buffer.to_byte_array() )
 	
 	return shape_bytes
+
+
+func get_stamps_rid() -> RID:
+	var usable_images : Array[Image] = []
+	var mimaps := 1
+	
+	for textur: Image in images:
+		var img := textur
+		var img_format := img.get_format()
+		var err := OK
+		
+		if img:
+			if img.is_compressed():
+				err = img.decompress()
+			if img_format != Image.FORMAT_RF:
+				img.convert(Image.FORMAT_RF)
+			if !img.has_mipmaps():
+				img.generate_mipmaps()
+		
+			img.resize(largest_image, largest_image, Image.INTERPOLATE_TRILINEAR)
+		
+			if err == OK:
+				usable_images.push_back(img)
+				mimaps = img.get_mipmap_count() + 1
+	
+	var data : Array[PackedByteArray] = []
+	
+	if usable_images.is_empty():
+		var ph_img := Image.create_empty(largest_image, largest_image, false, Image.FORMAT_RF)
+		data.push_back(ph_img.get_data())
+	
+	for img in usable_images:
+		data.push_back(img.get_data())
+	
+	var stamp_format := RDTextureFormat.new()
+	stamp_format.format = RenderingDevice.DATA_FORMAT_R32_SFLOAT
+	stamp_format.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
+	stamp_format.height = largest_image
+	stamp_format.width = largest_image
+	stamp_format.array_layers = usable_images.size()
+	stamp_format.mipmaps = mimaps
+	stamp_format.is_discardable = true
+	stamp_format.usage_bits = \
+			RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT
+	
+	return rd_device.texture_create(stamp_format, RDTextureView.new(), data)

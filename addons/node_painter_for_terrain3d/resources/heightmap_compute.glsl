@@ -18,8 +18,11 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer ShapeParameters {
     // Cricle type == 0 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, Radius) 9
     // Rectangle type == 1 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, XRectSize, YRectSize, Radius) 10
     // Polygon type == 2 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, PointCount, [x,y]) > 9
-    // Path type == 3 (InterpolationSize, InterpolationType, PathWidth, PointCount, [x, y, z]) > 4 // Points should be transformed into global space
+    // Path type == 3 (InterpolationSize, InterpolationType, PathWidth, PointCount, [x, y, z]) > 4 (Points should be transformed into global space)
+    // Stamp type == 4 (InterpolationSize, interpolType, XScale, YScale, Rotation, XPos, YPos, ZPos, HeightScale, StampSize, StampIndex) 11
 } shape_data_buffer;
+layout (set = 0, binding = 3) uniform sampler2DArray StampMaps;
+
 
 
 // SDF Functions for calculation1
@@ -117,10 +120,10 @@ void main() {
             s_sdf = circle(sample_pos, c_radius);
 
         } else if (type == 1) { // Rectangle
-        vec2 rec_size = vec2(shape_data_buffer.data[read_idx + 9], shape_data_buffer.data[read_idx + 10]);
-           read_idx += 11;
+            vec2 rec_size = vec2(shape_data_buffer.data[read_idx + 9], shape_data_buffer.data[read_idx + 10]);
+            read_idx += 11;
 
-           s_sdf = rectangle(sample_pos, rec_size);
+            s_sdf = rectangle(sample_pos, rec_size);
 
         } else if (type == 2) { // Polygon
             int point_count = int(shape_data_buffer.data[read_idx + 9]);
@@ -148,7 +151,7 @@ void main() {
             s_sdf = s*sqrt(dis);
 
 
-        } else { // Path
+        } else if (type == 3) { // Path
             int point_count = int(shape_data_buffer.data[read_idx + 4]);
             // Regular Shape parameters are unusable except interpol variables
             float path_width = shape_data_buffer.data[read_idx + 3];
@@ -182,6 +185,20 @@ void main() {
             }
 
             read_idx += 5 + point_count * 3;
+
+        } else { // Stamp Type
+            float height_s = shape_data_buffer.data[read_idx + 9];
+            float stamp_scale = shape_data_buffer.data[read_idx + 10];
+            float stamp_idx = shape_data_buffer.data[read_idx + 11];
+            read_idx += 12;
+
+            vec2 stamp_uv = (sample_pos / stamp_scale) * 0.5 + 0.5;
+            float stamp_height = height + texture(StampMaps, vec3(stamp_uv.x, stamp_uv.y, stamp_idx)).r * height_s;
+            height = stamp_height;
+
+            s_sdf = rectangle(sample_pos, vec2(stamp_scale - interpol));
+
+
         }
 
 

@@ -8,11 +8,13 @@ const circleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmo
 const rectangleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/rectangle_gizmo.gd")
 const pathGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/path_gizmo.gd")
 const polygonGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/polygon_gizmo.gd")
+const stampGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/stamp_gizmo.gd")
 
 var gizmo_circle = circleGizmoPlugin.new()
 var gizmo_rectangle = rectangleGizmoPlugin.new()
 var gizmo_path = pathGizmoPlugin.new()
 var gizmo_polygon = polygonGizmoPlugin.new()
+var gizmo_stamp = stampGizmoPlugin.new()
 
 func _enter_tree():
 	# Initialization of the plugin goes here.
@@ -25,6 +27,7 @@ func _enter_tree():
 	add_custom_type("NodePainterRectangle", "PaintShape", preload("res://addons/node_painter_for_terrain3d/resources/rectangle_shape.gd"), EditorInterface.get_editor_theme().get_icon("RectangleShape2D", "EditorIcons"))
 	add_custom_type("NodePainterPath", "PaintShape", preload("res://addons/node_painter_for_terrain3d/resources/path_shape.gd"), EditorInterface.get_editor_theme().get_icon("Path3D", "EditorIcons"))
 	add_custom_type("NodePainterPolygon", "PaintShape", preload("res://addons/node_painter_for_terrain3d/resources/polygon_shape.gd"), EditorInterface.get_editor_theme().get_icon("CollisionPolygon2D", "EditorIcons"))
+	add_custom_type("NodePainterStamp", "PaintShape", preload("res://addons/node_painter_for_terrain3d/resources/stamp_shape.gd"), EditorInterface.get_editor_theme().get_icon("HeightMapShape3D", "EditorIcons"))
 
 	# Add Script Types
 	add_custom_type("NodePainterContainer", "Node3D", container_script, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
@@ -35,6 +38,7 @@ func _enter_tree():
 	add_node_3d_gizmo_plugin(gizmo_rectangle)
 	add_node_3d_gizmo_plugin(gizmo_path)
 	add_node_3d_gizmo_plugin(gizmo_polygon)
+	add_node_3d_gizmo_plugin(gizmo_stamp)
 
 
 func _exit_tree():
@@ -46,8 +50,10 @@ func _exit_tree():
 	remove_custom_type("NodePainterBaseShape")
 	remove_custom_type("NodePainterPath")
 	remove_custom_type("NodePainterPolygon")
+	remove_custom_type("NodePainterStamp")
 	
 	remove_node_3d_gizmo_plugin(gizmo_circle)
 	remove_node_3d_gizmo_plugin(gizmo_rectangle)
 	remove_node_3d_gizmo_plugin(gizmo_path)
 	remove_node_3d_gizmo_plugin(gizmo_polygon)
+	remove_node_3d_gizmo_plugin(gizmo_stamp)
