@@ -6,7 +6,7 @@
 
 ## How does it work?
 
-+ Add a `NodePainterContainer` as a child of a Terrain3D node. The container handles all heightmap generation, while taking its child shapes into account in the order of the scene tree.
++ Add a `NodePainterContainer` as a child of a Terrain3D node. The container handles all heightmap generation, while taking its child shapes into account in the order of the scene tree. The Node now replaces Terrain3Ds own way to edit the terrain.
 
 + Add a `NodePainterShape` as a child of the Container and add a desired shape in the inspector.
 
