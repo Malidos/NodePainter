@@ -230,8 +230,8 @@ func _generate_new_heightmap() -> void:
 				region.set_map(Terrain3DRegion.TYPE_CONTROL, output_image)
 		
 		
-		terrainNode.data.force_update_maps(Terrain3DRegion.TYPE_HEIGHT)
-		terrainNode.data.force_update_maps(Terrain3DRegion.TYPE_CONTROL)
+		terrainNode.data.update_maps(Terrain3DRegion.TYPE_HEIGHT)
+		terrainNode.data.update_maps(Terrain3DRegion.TYPE_CONTROL)
 		
 		
 		# Free used rids
