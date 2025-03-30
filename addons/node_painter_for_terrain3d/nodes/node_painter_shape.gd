@@ -5,8 +5,16 @@ class_name NodePainterShape
 extends Node3D
 
 signal shape_updated
+signal about_to_exit_tree(node: Node3D)
 
 const container := preload("res://addons/node_painter_for_terrain3d/nodes/node_painter_container.gd")
+
+@export_enum("Height", "Texture", "Both") var mode: int = 0:
+	set(value):
+		mode = value
+		shape_updated.emit()
+	get():
+		return float(mode)
 
 @export var shape: NodePainterBaseShape:
 	set(value):
@@ -28,8 +36,14 @@ func _enter_tree():
 		editor_state_changed.connect(_emit_shape_update)
 	set_notify_transform(true)
 
+func _ready():
+	update_configuration_warnings()
+
+func _exit_tree():
+	about_to_exit_tree.emit(self)
+
 func _get_configuration_warnings():
-	if get_parent_node_3d() is container:
+	if shape_updated.has_connections():
 		return []
 	else:
 		return ["Node must be a child of a Node Painter Container."]

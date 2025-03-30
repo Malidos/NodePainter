@@ -13,10 +13,17 @@ signal value_changed
 		gizmo_relevant_update.emit()
 		value_changed.emit()
 
-# Type of transition to use between the terrain and shape height
+## Type of transition to use between the terrain and shape height
 @export_enum("Smoothstep", "Linear", "Ease in", "Ease out") var transition_type := 0:
 	set(value):
 		transition_type = value
 		value_changed.emit()
 	get():
 		return float(transition_type)
+
+@export_range(0, 31, 1) var texture_id := 1:
+	set(value):
+		texture_id = value
+		value_changed.emit()
+	get():
+		return float(texture_id)

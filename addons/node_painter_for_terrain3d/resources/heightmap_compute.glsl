@@ -8,18 +8,20 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // Memory preperation
 layout(set = 0, binding = 0, r32f) restrict uniform image2D heightmap;
+layout(set = 0, binding = 4, r32ui) restrict uniform uimage2D controlmap;
 layout(set = 0, binding = 1, std430) restrict readonly buffer MapParameters {
     vec2 region_coord;
     float v_spacing;
+    float base_texture;
 } map_parameters;
 layout(set = 0, binding = 2, std430) restrict readonly buffer ShapeParameters {
     int operations; // Amount of Shapes to be processed
     float data[]; // Data each shape needs is different coded in first as type
-    // Cricle type == 0 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, Radius) 9
-    // Rectangle type == 1 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, XRectSize, YRectSize, Radius) 10
-    // Polygon type == 2 (InterpolationSize, InterpolationType, XScale, YScale, Rotation, XPos, YPos, ZPos, PointCount, [x,y]) > 9
-    // Path type == 3 (InterpolationSize, InterpolationType, PathWidth, PointCount, [x, y, z]) > 4 (Points should be transformed into global space)
-    // Stamp type == 4 (InterpolationSize, interpolType, XScale, YScale, Rotation, XPos, YPos, ZPos, HeightScale, StampSize, StampIndex) 11
+    // Cricle type == 0 (InterpolationSize, InterpolationType, Operation, Texture, XScale, YScale, Rotation, XPos, YPos, ZPos, Radius) 9
+    // Rectangle type == 1 (InterpolationSize, InterpolationType, Operation, Texture, XScale, YScale, Rotation, XPos, YPos, ZPos, XRectSize, YRectSize, Radius) 10
+    // Polygon type == 2 (InterpolationSize, InterpolationType, Operation, Texture, XScale, YScale, Rotation, XPos, YPos, ZPos, PointCount, [x,y]) > 9
+    // Path type == 3 (InterpolationSize, InterpolationType, Operation, Texture, PathWidth, PointCount, [x, y, z]) > 4 (Points should be transformed into global space)
+    // Stamp type == 4 (InterpolationSize, interpolType, Operation, Texture, XScale, YScale, Rotation, XPos, YPos, ZPos, HeightScale, StampSize, StampIndex) 11
 } shape_data_buffer;
 layout (set = 0, binding = 3) uniform sampler2DArray StampMaps;
 
@@ -89,7 +91,13 @@ float sdf_ease_in(float sdf, float len) {
 void main() {
     // Grabs image coordinates, dimension and information
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
+
     float map_height = imageLoad(heightmap, coords).r;
+    uint control = imageLoad(controlmap, coords).r;
+    uint auto_paint = 0x1u;
+    float text_blend = 0.0;
+    uint text_id = uint(map_parameters.base_texture);
+
     ivec2 dimensions = imageSize(heightmap);
     vec2 global_size = vec2(dimensions) * map_parameters.v_spacing;
     
@@ -102,40 +110,42 @@ void main() {
     for (int i = 0; i < shape_data_buffer.operations; i++) {
         // Retrive Shaoe parameters
         int type = int(shape_data_buffer.data[read_idx]);
+        int op = int(shape_data_buffer.data[read_idx + 3]);
 
-        vec2 location = vec2(shape_data_buffer.data[read_idx + 6], shape_data_buffer.data[read_idx + 7]);
-        float height = shape_data_buffer.data[read_idx + 8];
-        vec2 scale = vec2(shape_data_buffer.data[read_idx + 3], shape_data_buffer.data[read_idx + 4]);
-        float shape_rotation = shape_data_buffer.data[read_idx + 5];
+        vec2 location = vec2(shape_data_buffer.data[read_idx + 8], shape_data_buffer.data[read_idx + 9]);
+        float height = shape_data_buffer.data[read_idx + 10];
+        vec2 scale = vec2(shape_data_buffer.data[read_idx + 5], shape_data_buffer.data[read_idx + 6]);
+        float shape_rotation = shape_data_buffer.data[read_idx + 7];
         float interpol = shape_data_buffer.data[read_idx + 1];
         int interpolType = int(shape_data_buffer.data[read_idx + 2]);
+        uint texture_id = uint(shape_data_buffer.data[read_idx + 4]);
         vec2 sample_pos = transform(global_loc, location, scale, shape_rotation);
 
         // Rund SDF calculation by type
         float s_sdf;
         if (type == 0) { // Circle
-            float c_radius = shape_data_buffer.data[read_idx + 9];
-            read_idx += 10;
+            float c_radius = shape_data_buffer.data[read_idx + 11];
+            read_idx += 12;
 
             s_sdf = circle(sample_pos, c_radius);
 
         } else if (type == 1) { // Rectangle
-            vec2 rec_size = vec2(shape_data_buffer.data[read_idx + 9], shape_data_buffer.data[read_idx + 10]);
-            read_idx += 11;
+            vec2 rec_size = vec2(shape_data_buffer.data[read_idx + 11], shape_data_buffer.data[read_idx + 12]);
+            read_idx += 13;
 
             s_sdf = rectangle(sample_pos, rec_size);
 
         } else if (type == 2) { // Polygon
-            int point_count = int(shape_data_buffer.data[read_idx + 9]);
-            vec2 first_point = vec2(shape_data_buffer.data[read_idx + 10], shape_data_buffer.data[read_idx + 11]);
+            int point_count = int(shape_data_buffer.data[read_idx + 11]);
+            vec2 first_point = vec2(shape_data_buffer.data[read_idx + 12], shape_data_buffer.data[read_idx + 13]);
 
             // Polygon SDF calculation, cant be moved into a subroutnine because the array size is unknown
             float dis = dot(sample_pos - first_point, sample_pos - first_point);
             float s = 1.0;
 
             for (int i=0, j=point_count-1; i<point_count; j=i, i++) {
-                vec2 cur = vec2(shape_data_buffer.data[read_idx + 10 + i*2], shape_data_buffer.data[read_idx + 11 + i*2]);
-                vec2 prev = vec2(shape_data_buffer.data[read_idx + 10 + j*2], shape_data_buffer.data[read_idx + 11 + j*2]);
+                vec2 cur = vec2(shape_data_buffer.data[read_idx + 12 + i*2], shape_data_buffer.data[read_idx + 13 + i*2]);
+                vec2 prev = vec2(shape_data_buffer.data[read_idx + 12 + j*2], shape_data_buffer.data[read_idx + 13 + j*2]);
 
                 vec2 e = prev - cur;
                 vec2 w = sample_pos - cur;
@@ -147,24 +157,24 @@ void main() {
                 if ( all(cond) || all(not(cond))) {s = -s;}
             }
 
-            read_idx += 10 + point_count * 2;
+            read_idx += 12 + point_count * 2;
             s_sdf = s*sqrt(dis);
 
 
         } else if (type == 3) { // Path
-            int point_count = int(shape_data_buffer.data[read_idx + 4]);
+            int point_count = int(shape_data_buffer.data[read_idx + 6]);
             // Regular Shape parameters are unusable except interpol variables
-            float path_width = shape_data_buffer.data[read_idx + 3];
+            float path_width = shape_data_buffer.data[read_idx + 5];
 
-            s_sdf = length(vec2(shape_data_buffer.data[read_idx + 5], shape_data_buffer.data[read_idx + 7]) - global_loc);
+            s_sdf = length(vec2(shape_data_buffer.data[read_idx + 7], shape_data_buffer.data[read_idx + 9]) - global_loc);
             height = map_height;
             for (int i=0; i<point_count-1; i++) {
-                vec3 first_point = vec3(shape_data_buffer.data[read_idx + i*3 + 5],
-                                        shape_data_buffer.data[read_idx + i*3 + 6],
-                                        shape_data_buffer.data[read_idx + i*3 + 7]);
-                vec3 secound_point = vec3(shape_data_buffer.data[read_idx + i*3 + 8],
-                                        shape_data_buffer.data[read_idx + i*3 + 9],
-                                        shape_data_buffer.data[read_idx + i*3 + 10]);
+                vec3 first_point = vec3(shape_data_buffer.data[read_idx + i*3 + 7],
+                                        shape_data_buffer.data[read_idx + i*3 + 8],
+                                        shape_data_buffer.data[read_idx + i*3 + 9]);
+                vec3 secound_point = vec3(shape_data_buffer.data[read_idx + i*3 + 10],
+                                        shape_data_buffer.data[read_idx + i*3 + 11],
+                                        shape_data_buffer.data[read_idx + i*3 + 12]);
                 
                 vec2 sdf_calc = segment(global_loc, first_point.xz, secound_point.xz, path_width);
                 float height_gradient = mix(first_point.y, secound_point.y, sdf_calc.y);
@@ -184,13 +194,13 @@ void main() {
                 s_sdf = min(sdf_calc.x, s_sdf);
             }
 
-            read_idx += 5 + point_count * 3;
+            read_idx += 7 + point_count * 3;
 
         } else { // Stamp Type
-            float height_s = shape_data_buffer.data[read_idx + 9];
-            float stamp_scale = shape_data_buffer.data[read_idx + 10];
-            float stamp_idx = shape_data_buffer.data[read_idx + 11];
-            read_idx += 12;
+            float height_s = shape_data_buffer.data[read_idx + 11];
+            float stamp_scale = shape_data_buffer.data[read_idx + 12];
+            float stamp_idx = shape_data_buffer.data[read_idx + 13];
+            read_idx += 14;
 
             vec2 stamp_uv = (sample_pos / stamp_scale) * 0.5 + 0.5;
             float stamp_height = height + texture(StampMaps, vec3(stamp_uv.x, stamp_uv.y, stamp_idx)).r * height_s;
@@ -203,19 +213,47 @@ void main() {
 
 
         // Shape Interpolation and blending
-        if (interpolType == 0) {
-            s_sdf = sdf_smoothstep(s_sdf, interpol);
-        } else if (interpolType == 1) {
+        if (interpolType == 1) {
             s_sdf = sdf_linear(s_sdf, interpol);
         } else if (interpolType == 2) {
             s_sdf = sdf_ease_in(s_sdf, interpol);
         } else if (interpolType == 3) {
             s_sdf = sdf_ease_out(s_sdf, interpol);
+        } else {
+            s_sdf = sdf_smoothstep(s_sdf, interpol);
         }
 
-        map_height = mix(height, map_height, s_sdf);
+        if (op == 0 || op == 2) { // Height Operation
+            map_height = mix(height, map_height, s_sdf);
+        }
+        
+        if (op >= 1 && s_sdf < 1.0) { // Texture Operation
+
+            if (texture_id == text_id) {
+                text_blend = mix(1.0, text_blend, s_sdf);
+            } else {
+                text_blend = mix(1.0, 0.0, s_sdf);
+            }
+
+            text_id = texture_id;
+            auto_paint = 0x0u;
+        }
     }
     
+
+    // Encode Texture Data
+    control = control | 0x1u;
+    control = control | 0xFFFFC000u;
+
+    uint as = auto_paint & 0x1u;
+    uint bt = (uint(map_parameters.base_texture) & 0x1Fu) << 27;
+    uint ot = (text_id & 0x1Fu) << 22;
+    uint tb = (uint(text_blend * 255.0) & 0xFFu) << 14;
+
+    control = control & (as | bt | ot | tb);
+
+
     // Store the data back into the image
     imageStore(heightmap, coords, vec4(map_height, 0.0, 0.0, 1.0));
+    imageStore(controlmap, coords, uvec4(control));
 }

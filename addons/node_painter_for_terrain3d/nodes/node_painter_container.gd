@@ -11,6 +11,11 @@ extends Node3D
 	set(value):
 		base_height = value
 		update_terrain()
+@export_range(0, 31, 1) var base_texture : int = 0:
+	set(value):
+		base_texture = value
+		update_terrain()
+
 
 var terrainNode: Terrain3D
 var rd_device: RenderingDevice
@@ -28,10 +33,10 @@ const compute_shader_file := preload("res://addons/node_painter_for_terrain3d/re
 const path_tesselation_stages := 6
 const path_tesselation_degrees := 3
 
+
 func _enter_tree():
 	if Engine.is_editor_hint():
 		child_entered_tree.connect(_child_entered_tree)
-		child_exiting_tree.connect(_child_exitied_tree)
 		
 		set_notify_transform(true)
 		rd_device = RenderingServer.create_local_rendering_device()
@@ -64,13 +69,20 @@ func _notification(what):
 			transform = Transform3D.IDENTITY
 
 func _child_entered_tree(node: Node) -> void:
+	node.child_entered_tree.connect(_child_entered_tree)
+	
 	if node is NodePainterShape:
 		node.shape_updated.connect(update_terrain)
+		node.about_to_exit_tree.connect(_child_exiting)
+	
+	for child in node.find_children("*", "NodePainterShape"):
+		child.shape_updated.connect(update_terrain)
+		child.about_to_exit_tree.connect(_child_exiting)
 
-func _child_exitied_tree(node: Node) -> void:
-	if node is NodePainterShape:
-		node.shape_updated.disconnect(update_terrain)
-		update_terrain()
+func _child_exiting(node: Node3D) -> void:
+	node.shape_updated.disconnect(update_terrain)
+	node.about_to_exit_tree.disconnect(_child_exiting)
+	update_terrain()
 
 ## Use this function to schedule a terrain update as it protects againts multiple updates in quick succsession.
 func update_terrain() -> void:
@@ -94,6 +106,7 @@ func _generate_new_heightmap() -> void:
 	# Create Computation Pipeline
 	var pipeline := rd_device.compute_pipeline_create(shader)
 	var heightmaps : Dictionary[Terrain3DRegion, RID] = {}
+	var control_maps : Dictionary[Terrain3DRegion, RID] = {}
 	var rids : Array[RID] = []
 	
 	var shape_data_buffer := get_shape_data_buffer()
@@ -131,7 +144,7 @@ func _generate_new_heightmap() -> void:
 		
 		for region: Terrain3DRegion in regions:
 			# Generate Region specific parameters
-			var region_data := PackedFloat32Array([float(region.location.x), float(region.location.y), region.vertex_spacing]).to_byte_array()
+			var region_data := PackedFloat32Array([float(region.location.x), float(region.location.y), region.vertex_spacing, float(base_texture)]).to_byte_array()
 			var region_buffer := rd_device.storage_buffer_create(region_data.size(), region_data)
 			rids.push_back(region_buffer)
 			
@@ -162,7 +175,28 @@ func _generate_new_heightmap() -> void:
 			heightmap_uniform.binding = 0
 			heightmap_uniform.add_id(heightmap_rid)
 			
-			var region_set := rd_device.uniform_set_create([heightmap_uniform, region_uniform, shape_uniform, stamp_uniform], shader, 0)
+			# Get Control Map
+			var control_format := RDTextureFormat.new()
+			control_format.format = RenderingDevice.DATA_FORMAT_R32_UINT
+			control_format.width = region.region_size
+			control_format.height = region.region_size
+			control_format.usage_bits = \
+				RenderingDevice.TEXTURE_USAGE_STORAGE_BIT + \
+				RenderingDevice.TEXTURE_USAGE_CAN_UPDATE_BIT + \
+				RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT
+			
+			var control_img := region.get_map(Terrain3DRegion.TYPE_CONTROL)
+			var control_rid := rd_device.texture_create(control_format, RDTextureView.new(), [control_img.get_data()])
+			rids.push_back(control_rid)
+			control_maps[region] = control_rid
+			
+			var control_map_uniform := RDUniform.new()
+			control_map_uniform.uniform_type = RenderingDevice.UNIFORM_TYPE_IMAGE
+			control_map_uniform.binding = 4
+			control_map_uniform.add_id(control_rid)
+			
+			
+			var region_set := rd_device.uniform_set_create([heightmap_uniform, region_uniform, shape_uniform, stamp_uniform, control_map_uniform], shader, 0)
 			
 			# Attatch the region to the compute pipeline
 			var compute_list := rd_device.compute_list_begin()
@@ -186,7 +220,18 @@ func _generate_new_heightmap() -> void:
 			
 			if region.validate_map_size(output_image):
 				region.set_map(Terrain3DRegion.TYPE_HEIGHT, output_image)
+			
+			# Contol Map retriving
+			var ctrl_rid := control_maps[region]
+			output_bytes = rd_device.texture_get_data(ctrl_rid, 0)
+			output_image = Image.create_from_data(rg_size, rg_size, false, Image.FORMAT_RF, output_bytes)
+			
+			if region.validate_map_size(output_image):
+				region.set_map(Terrain3DRegion.TYPE_CONTROL, output_image)
+		
+		
 		terrainNode.data.force_update_maps(Terrain3DRegion.TYPE_HEIGHT)
+		terrainNode.data.force_update_maps(Terrain3DRegion.TYPE_CONTROL)
 		
 		
 		# Free used rids
@@ -205,11 +250,10 @@ func _exit_tree():
 	rd_device = null
 	
 	child_entered_tree.disconnect(_child_entered_tree)
-	child_exiting_tree.disconnect(_child_exitied_tree)
 
 
 func get_shape_data_buffer() -> PackedByteArray:
-	var childs := get_children()
+	var childs := find_children("*", "NodePainterShape")
 	var edit_nodes := childs.filter(func(node): return node is NodePainterShape and node.shape)
 	images = []
 	largest_image = 128
@@ -224,9 +268,11 @@ func get_shape_data_buffer() -> PackedByteArray:
 			shape_data_buffer.push_back(0.0) # Shape is type Circle
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) ) # "Transition Type"
+			shape_data_buffer.push_back( float(shape.mode) )
+			shape_data_buffer.push_back( float(shape.shape.texture_id) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
-			shape_data_buffer.push_back(shape.rotation.y)
+			shape_data_buffer.push_back(shape.global_rotation.y)
 			shape_data_buffer.push_back(shape.global_position.x)
 			shape_data_buffer.push_back(shape.global_position.z)
 			shape_data_buffer.push_back(shape.global_position.y)
@@ -238,9 +284,11 @@ func get_shape_data_buffer() -> PackedByteArray:
 			shape_data_buffer.push_back(1.0) # Shape is type Rectangle
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
+			shape_data_buffer.push_back( float(shape.mode) )
+			shape_data_buffer.push_back( float(shape.shape.texture_id) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
-			shape_data_buffer.push_back(shape.rotation.y)
+			shape_data_buffer.push_back(shape.global_rotation.y)
 			shape_data_buffer.push_back(shape.global_position.x)
 			shape_data_buffer.push_back(shape.global_position.z)
 			shape_data_buffer.push_back(shape.global_position.y)
@@ -254,9 +302,11 @@ func get_shape_data_buffer() -> PackedByteArray:
 			shape_data_buffer.push_back(2.0) # Shape is type Polygon
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
+			shape_data_buffer.push_back( float(shape.mode) )
+			shape_data_buffer.push_back( float(shape.shape.texture_id) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
-			shape_data_buffer.push_back(shape.rotation.y)
+			shape_data_buffer.push_back(shape.global_rotation.y)
 			shape_data_buffer.push_back(shape.global_position.x)
 			shape_data_buffer.push_back(shape.global_position.z)
 			shape_data_buffer.push_back(shape.global_position.y)
@@ -276,6 +326,8 @@ func get_shape_data_buffer() -> PackedByteArray:
 			shape_data_buffer.push_back(3.0) # Shape is type Path
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
+			shape_data_buffer.push_back( float(shape.mode) )
+			shape_data_buffer.push_back( float(shape.shape.texture_id) )
 			shape_data_buffer.push_back(shape.shape.thickness)
 			shape_data_buffer.push_back(path_points.size())
 			
@@ -291,9 +343,11 @@ func get_shape_data_buffer() -> PackedByteArray:
 			shape_data_buffer.push_back(4.0) # Shape is type Stamp
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) ) # "Transition Type"
+			shape_data_buffer.push_back( float(shape.mode) )
+			shape_data_buffer.push_back( float(shape.shape.texture_id) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
-			shape_data_buffer.push_back(shape.rotation.y)
+			shape_data_buffer.push_back(shape.global_rotation.y)
 			shape_data_buffer.push_back(shape.global_position.x)
 			shape_data_buffer.push_back(shape.global_position.z)
 			shape_data_buffer.push_back(shape.global_position.y)
@@ -351,7 +405,7 @@ func get_stamps_rid() -> RID:
 	stamp_format.texture_type = RenderingDevice.TEXTURE_TYPE_2D_ARRAY
 	stamp_format.height = largest_image
 	stamp_format.width = largest_image
-	stamp_format.array_layers = usable_images.size()
+	stamp_format.array_layers = max(usable_images.size(), 1)
 	stamp_format.mipmaps = mimaps
 	stamp_format.is_discardable = true
 	stamp_format.usage_bits = \
