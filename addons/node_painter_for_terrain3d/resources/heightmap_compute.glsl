@@ -156,7 +156,7 @@ void main() {
             // Regular Shape parameters are unusable except interpol variables
             float path_width = shape_data_buffer.data[read_idx + 3];
 
-            s_sdf = length(vec2(shape_data_buffer.data[read_idx], shape_data_buffer.data[read_idx + 1]) - global_loc);
+            s_sdf = length(vec2(shape_data_buffer.data[read_idx + 5], shape_data_buffer.data[read_idx + 7]) - global_loc);
             height = map_height;
             for (int i=0; i<point_count-1; i++) {
                 vec3 first_point = vec3(shape_data_buffer.data[read_idx + i*3 + 5],
