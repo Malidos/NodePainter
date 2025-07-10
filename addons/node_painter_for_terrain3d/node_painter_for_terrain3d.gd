@@ -2,7 +2,9 @@
 class_name NodePainter
 extends EditorPlugin
 
-const container_script = preload("res://addons/node_painter_for_terrain3d/nodes/node_painter_container.gd")
+const container_script = preload("res://addons/node_painter_for_terrain3d/nodes/container.gd")
+const height_painter = preload("res://addons/node_painter_for_terrain3d/nodes/terrain_painter.gd")
+const grass_painter = preload("res://addons/node_painter_for_terrain3d/nodes/grass_painter.gd")
 const shape_script = preload("res://addons/node_painter_for_terrain3d/nodes/node_painter_shape.gd")
 const circleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/circle_gizmo.gd")
 const rectangleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/rectangle_gizmo.gd")
@@ -31,6 +33,8 @@ func _enter_tree():
 
 	# Add Script Types
 	add_custom_type("NodePainterContainer", "Node3D", container_script, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
+	add_custom_type("TerrainPainter", "NodePainterContainer", height_painter, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
+	add_custom_type("GrassPainter", "NodePainterContainer", grass_painter, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
 	add_custom_type("NodePainterShape", "Node3D", shape_script, EditorInterface.get_editor_theme().get_icon("CollisionShape3D", "EditorIcons"))
 	
 	# Add Gizmo Plugin
@@ -44,6 +48,8 @@ func _enter_tree():
 func _exit_tree():
 	# Clean-up of the plugin
 	remove_custom_type("NodePainterContainer")
+	remove_custom_type("TerrainPainter")
+	remove_custom_type("GrassPainter")
 	remove_custom_type("NodePainterShape")
 	remove_custom_type("NodePainterRectangle")
 	remove_custom_type("NodePainterCircle")

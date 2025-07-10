@@ -20,10 +20,3 @@ signal value_changed
 		value_changed.emit()
 	get():
 		return float(transition_type)
-
-@export_range(0, 31, 1) var texture_id := 1:
-	set(value):
-		texture_id = value
-		value_changed.emit()
-	get():
-		return float(texture_id)

@@ -5,6 +5,7 @@ extends EditorNode3DGizmoPlugin
 const target_node := preload("res://addons/node_painter_for_terrain3d/nodes/node_painter_shape.gd")
 const path_res : float = 0.2
 const cirle_div : int = 24
+var used_material := "main"
 
 
 func _get_gizmo_name():
@@ -19,6 +20,7 @@ func _has_gizmo(for_node_3d):
 
 func _init():
 	create_material("main", Color.YELLOW)
+	create_material("alt", Color.INDIAN_RED)
 	create_material("tangent", Color.ORANGE_RED)
 	create_handle_material("handles")
 
@@ -26,6 +28,8 @@ func _init():
 func _redraw(gizmo):
 	gizmo.clear()
 	var node3d : target_node = gizmo.get_node_3d()
+	used_material = "alt" if node3d.negative_shape else "main"
+	
 	var lines := PackedVector3Array([])
 	var tangents := PackedVector3Array([])
 	var handles := PackedVector3Array([])
@@ -97,7 +101,7 @@ func _redraw(gizmo):
 			sHandles.push_back(curve.get_point_position(i) + curve.get_point_in(i))
 	
 
-		gizmo.add_lines(lines, get_material("main", gizmo))
+		gizmo.add_lines(lines, get_material(used_material, gizmo))
 		gizmo.add_lines(tangents, get_material("tangent", gizmo))
 		gizmo.add_handles(handles, get_material("handles", gizmo), PackedInt32Array(range(curve.point_count)), true)
 		gizmo.add_handles(sHandles, get_material("handles", gizmo), PackedInt32Array(range(curve.point_count * 2)), false, true)
