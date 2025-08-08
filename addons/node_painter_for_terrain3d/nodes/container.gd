@@ -24,15 +24,13 @@ const path_tesselation_degrees := 3
 
 
 func _init():
-	tree_entered.connect(_on_entered_tree)
-	tree_exiting.connect(_on_exiting_tree)
 	set_physics_process_internal(true)
-
-func _on_entered_tree():
+	
 	if Engine.is_editor_hint():
-		child_entered_tree.connect(_child_entered_tree)
-		
-		set_notify_transform(true)
+		if not child_entered_tree.is_connected(_on_child_entered_tree):
+			child_entered_tree.connect(_on_child_entered_tree)
+		set_notify_local_transform(true)
+
 
 
 func _get_configuration_warnings():
@@ -55,35 +53,30 @@ func _notification(what):
 			else:
 				terrainNode = null
 		
-		NOTIFICATION_TRANSFORM_CHANGED:
+		NOTIFICATION_LOCAL_TRANSFORM_CHANGED:
+			set_notify_local_transform(false)
 			transform = Transform3D.IDENTITY
+			set_notify_local_transform(true)
 		
 		NOTIFICATION_INTERNAL_PHYSICS_PROCESS:
 			if update_scheduled:
 				if ticks_waiting_on_update > ticks_waiting:
-					call_deferred("_procedual_update")
+					_procedual_update()
 					update_scheduled = false
 					ticks_waiting_on_update = 0
 				else:
 					ticks_waiting_on_update += 1
 
-func _child_entered_tree(node: Node) -> void:
-	node.child_entered_tree.connect(_child_entered_tree)
+
+func _on_child_entered_tree(node: Node) -> void:
+	if not node.child_entered_tree.is_connected(_on_child_entered_tree):
+		node.child_entered_tree.connect(_on_child_entered_tree)
 	
 	if node is NodePainterShape:
-		node.shape_updated.connect(update_terrain)
-		node.about_to_exit_tree.connect(_child_exiting)
+		#node.shape_updated.connect(update_terrain)
 		node.parent_type = container_type
-	
-	for child in node.find_children("*", &"NodePainterShape"):
-		child.shape_updated.connect(update_terrain)
-		child.about_to_exit_tree.connect(_child_exiting)
-		child.parent_type = container_type
+		node.parent_container = self
 
-func _child_exiting(node: Node3D) -> void:
-	node.shape_updated.disconnect(update_terrain)
-	node.about_to_exit_tree.disconnect(_child_exiting)
-	update_terrain()
 
 ## Use this function to schedule a terrain update as it protects againts multiple updates in quick succsession.
 func update_terrain() -> void:
@@ -96,11 +89,6 @@ func update_terrain() -> void:
 func _procedual_update() -> void:
 	pass # programmed in inherting classes
 
-func _on_exiting_tree():
-	child_entered_tree.disconnect(_child_entered_tree)
-	
-	tree_entered.disconnect(_on_entered_tree)
-	tree_exiting.disconnect(_on_exiting_tree)
 
 ## Returns dictonary containing the encoded shapes and heightmaps used,
 ## 'ShapeBuffer' can directly be turned into a storage buffer, while from 'Format' and 'Data' an RDTexture can be generated using texture_create() on the local rendering device
@@ -112,15 +100,15 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 	# Generate the shape buffer data
 	var shape_count : int = 0
 	var shape_data_buffer := PackedFloat32Array([])
-	for shape: Node3D in edit_nodes:
+	for shape: NodePainterShape in edit_nodes:
 		if shape.shape is NodePainterCircle:
 			shape_count += 1
 			
 			shape_data_buffer.push_back(0.0) # Shape is type Circle
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) ) # "Transition Type"
-			shape_data_buffer.push_back( float(shape.mode) )
-			shape_data_buffer.push_back( float(shape.texture_id) )
+			shape_data_buffer.push_back( float(shape.local_density if container_type == 3 else shape.mode) )
+			shape_data_buffer.push_back( float(shape.get_ignored_encoded() if container_type == 3 else shape.texture_id) )
 			shape_data_buffer.push_back( float(shape.negative_shape) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
@@ -136,8 +124,8 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 			shape_data_buffer.push_back(1.0) # Shape is type Rectangle
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
-			shape_data_buffer.push_back( float(shape.mode) )
-			shape_data_buffer.push_back( float(shape.texture_id) )
+			shape_data_buffer.push_back( float(shape.local_density if container_type == 3 else shape.mode) )
+			shape_data_buffer.push_back( float(shape.get_ignored_encoded() if container_type == 3 else shape.texture_id) )
 			shape_data_buffer.push_back( float(shape.negative_shape) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
@@ -155,8 +143,8 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 			shape_data_buffer.push_back(2.0) # Shape is type Polygon
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
-			shape_data_buffer.push_back( float(shape.mode) )
-			shape_data_buffer.push_back( float(shape.texture_id) )
+			shape_data_buffer.push_back( float(shape.local_density if container_type == 3 else shape.mode) )
+			shape_data_buffer.push_back( float(shape.get_ignored_encoded() if container_type == 3 else shape.texture_id) )
 			shape_data_buffer.push_back( float(shape.negative_shape) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)
@@ -164,6 +152,7 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 			shape_data_buffer.push_back(shape.global_position.x)
 			shape_data_buffer.push_back(shape.global_position.z)
 			shape_data_buffer.push_back(shape.global_position.y)
+			
 			
 			shape_data_buffer.push_back(polygons.size())
 			for p in polygons:
@@ -180,8 +169,8 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 			shape_data_buffer.push_back(3.0) # Shape is type Path
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) )
-			shape_data_buffer.push_back( float(shape.mode) )
-			shape_data_buffer.push_back( float(shape.texture_id) )
+			shape_data_buffer.push_back( float(shape.local_density if container_type == 3 else shape.mode) )
+			shape_data_buffer.push_back( float(shape.get_ignored_encoded() if container_type == 3 else shape.texture_id) )
 			shape_data_buffer.push_back( float(shape.negative_shape) )
 			shape_data_buffer.push_back(shape.shape.thickness)
 			shape_data_buffer.push_back(path_points.size())
@@ -198,8 +187,8 @@ func get_shape_data_buffer(exclude_stamps: bool = false) -> Dictionary:
 			shape_data_buffer.push_back(4.0) # Shape is type Stamp
 			shape_data_buffer.push_back(shape.shape.transition_size)
 			shape_data_buffer.push_back( float(shape.shape.transition_type) ) # "Transition Type"
-			shape_data_buffer.push_back( float(shape.mode) )
-			shape_data_buffer.push_back( float(shape.texture_id) )
+			shape_data_buffer.push_back( float(shape.local_density if container_type == 3 else shape.mode) )
+			shape_data_buffer.push_back( float(shape.get_ignored_encoded() if container_type == 3 else shape.texture_id) )
 			shape_data_buffer.push_back( float(shape.negative_shape) )
 			shape_data_buffer.push_back(shape.scale.x)
 			shape_data_buffer.push_back(shape.scale.z)

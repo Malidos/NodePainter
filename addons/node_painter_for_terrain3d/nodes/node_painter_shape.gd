@@ -5,7 +5,7 @@ class_name NodePainterShape
 extends Node3D
 
 signal shape_updated
-signal about_to_exit_tree(node: Node3D)
+signal about_to_exit_tree(node: NodePainterShape)
 
 const container := preload("res://addons/node_painter_for_terrain3d/nodes/container.gd")
 
@@ -14,6 +14,7 @@ var parent_type : NodePainterContainer.ContainerType = 0:
 	set(value):
 		parent_type = value
 		notify_property_list_changed()
+var parent_container : NodePainterContainer
 
 @export var shape: NodePainterBaseShape:
 	set(value):
@@ -26,29 +27,39 @@ var parent_type : NodePainterContainer.ContainerType = 0:
 		
 		update_gizmos()
 		if shape:
-			shape.connect(&"gizmo_relevant_update", update_gizmos)
-			shape.connect(&"value_changed", _emit_shape_update)
+			shape.gizmo_relevant_update.connect(update_gizmos)
+			shape.value_changed.connect(_emit_shape_update)
 
 # Use case dependent variables
 var negative_shape : bool = false:
 	set(value):
 		negative_shape = value
-		shape_updated.emit()
+		_emit_shape_update()
 		update_gizmos()
 
 var texture_id : int = 1:
 	set(value):
 		texture_id = value
-		shape_updated.emit()
+		_emit_shape_update()
 	get():
 		return float(texture_id)
 
 var mode: int = 0:
 	set(value):
 		mode = value
-		shape_updated.emit()
+		_emit_shape_update()
 	get():
 		return float(mode)
+
+var local_density := 1.0:
+	set(value):
+		local_density = value
+		_emit_shape_update()
+
+var ignored_meshes := 0b0:
+	set(value):
+		ignored_meshes = value
+		_emit_shape_update()
 
 
 func _get_property_list():
@@ -78,32 +89,59 @@ func _get_property_list():
 					"type": TYPE_BOOL,
 					"usage": PROPERTY_USAGE_DEFAULT
 				})
+			
+			3:
+				ret.append({
+					"name": &"negative_shape",
+					"type": TYPE_BOOL,
+					"usage": PROPERTY_USAGE_DEFAULT
+				})
+				ret.append({
+					"name": &"local_density",
+					"type": TYPE_FLOAT,
+					"usage": PROPERTY_USAGE_DEFAULT,
+					"hint": PROPERTY_HINT_RANGE,
+					"hint_string": "0.01,1.0"
+				})
+				ret.append({
+					"name": &"ignored_meshes",
+					"type": TYPE_INT,
+					"usage": PROPERTY_USAGE_DEFAULT,
+					"hint": PROPERTY_HINT_LAYERS_2D_NAVIGATION
+				})
 		
 		return ret
 
 
-func _enter_tree():
-	if !editor_state_changed.is_connected(_emit_shape_update):
-		editor_state_changed.connect(_emit_shape_update)
-	set_notify_transform(true)
-
 func _ready():
 	update_configuration_warnings()
+	tree_exited.connect(_on_exiting_tree)
+	set_notify_local_transform(true)
 
-func _exit_tree():
-	about_to_exit_tree.emit(self)
 
 func _get_configuration_warnings():
-	if shape_updated.has_connections():
+	if parent_container:
 		return []
 	else:
 		return ["Node must be a child of a Node Painter Container."]
 
 func _notification(what):
 	match what:
-		NOTIFICATION_TRANSFORM_CHANGED:
+		NOTIFICATION_LOCAL_TRANSFORM_CHANGED:
 			_emit_shape_update()
 
 
 func _emit_shape_update() -> void:
+	if parent_container:
+		parent_container.update_terrain()
+	
 	shape_updated.emit()
+
+func get_ignored_encoded() -> float:
+	return float(ignored_meshes)
+
+func _on_exiting_tree() -> void:
+	call_deferred(&"_emit_shape_update")
+	about_to_exit_tree.emit(self)
+	parent_type = 0
+	parent_container = null

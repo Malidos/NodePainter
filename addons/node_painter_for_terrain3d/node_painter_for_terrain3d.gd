@@ -2,10 +2,14 @@
 class_name NodePainter
 extends EditorPlugin
 
+const multithreading_setting := "NodePainter/generation/multithreading_enabled"
+
 const container_script = preload("res://addons/node_painter_for_terrain3d/nodes/container.gd")
 const height_painter = preload("res://addons/node_painter_for_terrain3d/nodes/terrain_painter.gd")
 const grass_painter = preload("res://addons/node_painter_for_terrain3d/nodes/grass_painter.gd")
+const foliage_painter = preload("res://addons/node_painter_for_terrain3d/nodes/foliage_painter.gd")
 const shape_script = preload("res://addons/node_painter_for_terrain3d/nodes/node_painter_shape.gd")
+const foliage_mesh_script = preload("res://addons/node_painter_for_terrain3d/resources/NodePainterMesh.gd")
 const circleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/circle_gizmo.gd")
 const rectangleGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/rectangle_gizmo.gd")
 const pathGizmoPlugin = preload("res://addons/node_painter_for_terrain3d/gizmos/path_gizmo.gd")
@@ -35,7 +39,9 @@ func _enter_tree():
 	add_custom_type("NodePainterContainer", "Node3D", container_script, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
 	add_custom_type("TerrainPainter", "NodePainterContainer", height_painter, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
 	add_custom_type("GrassPainter", "NodePainterContainer", grass_painter, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
+	add_custom_type("FoliagePainter", "NodePainterContainer", foliage_painter, EditorInterface.get_editor_theme().get_icon("CanvasLayer", "EditorIcons"))
 	add_custom_type("NodePainterShape", "Node3D", shape_script, EditorInterface.get_editor_theme().get_icon("CollisionShape3D", "EditorIcons"))
+	add_custom_type("NodePainterMesh", "Resource", foliage_mesh_script, EditorInterface.get_editor_theme().get_icon("PointMesh", "EditorIcons"))
 	
 	# Add Gizmo Plugin
 	add_node_3d_gizmo_plugin(gizmo_circle)
@@ -43,13 +49,17 @@ func _enter_tree():
 	add_node_3d_gizmo_plugin(gizmo_path)
 	add_node_3d_gizmo_plugin(gizmo_polygon)
 	add_node_3d_gizmo_plugin(gizmo_stamp)
-
+	
+	if !ProjectSettings.has_setting(multithreading_setting):
+		ProjectSettings.set_setting(multithreading_setting, false)
+		ProjectSettings.set_initial_value(multithreading_setting, false)
 
 func _exit_tree():
 	# Clean-up of the plugin
 	remove_custom_type("NodePainterContainer")
 	remove_custom_type("TerrainPainter")
 	remove_custom_type("GrassPainter")
+	remove_custom_type("FoliagePainter")
 	remove_custom_type("NodePainterShape")
 	remove_custom_type("NodePainterRectangle")
 	remove_custom_type("NodePainterCircle")
@@ -57,6 +67,7 @@ func _exit_tree():
 	remove_custom_type("NodePainterPath")
 	remove_custom_type("NodePainterPolygon")
 	remove_custom_type("NodePainterStamp")
+	remove_custom_type("NodePainterMesh")
 	
 	remove_node_3d_gizmo_plugin(gizmo_circle)
 	remove_node_3d_gizmo_plugin(gizmo_rectangle)

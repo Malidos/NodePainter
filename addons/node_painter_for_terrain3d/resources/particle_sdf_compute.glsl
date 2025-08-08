@@ -90,7 +90,7 @@ void main() {
     // Grabs image coordinates, dimension and information
     ivec2 coords = ivec2(gl_GlobalInvocationID.xy);
 
-    highp float map_value = 0.0;
+    float map_value = 0.0;
 
     ivec2 dimensions = imageSize(sdfmap);
     vec2 global_size = vec2(dimensions) * map_parameters.v_spacing;

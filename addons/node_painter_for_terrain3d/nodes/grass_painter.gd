@@ -20,6 +20,9 @@ const compute_shader_file := preload("res://addons/node_painter_for_terrain3d/re
 		mesh = value
 		call_deferred("update_grid")
 
+@export_flags_3d_render var layers := 1
+@export var shadow_casting : GeometryInstance3D.ShadowCastingSetting = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
 @export_subgroup("Chunck Settings")
 ## Used for Chunk calculation. Transitional Effects have to be provided by the Mesh itself.
 @export_range(5.0, 100.0) var view_distance: float = 20.0:
@@ -95,8 +98,8 @@ const compute_shader_file := preload("res://addons/node_painter_for_terrain3d/re
 		color_blur = value
 		call_deferred("update_grid")
 
-@export var _sdf_maps: Texture2DArray
-@export var process_material: ShaderMaterial
+@export_storage var _sdf_maps: Texture2DArray
+@export_storage var process_material: ShaderMaterial
 
 const gpu_shader : Shader = preload("res://addons/node_painter_for_terrain3d/resources/particle_process.gdshader")
 const particle_fps := 20
@@ -105,6 +108,7 @@ var particle_instances : Dictionary[Vector2i, GPUParticles3D]
 var grid_size : int = 1
 var rows : int = 1
 var __create_new_grid := false
+
 
 
 func _enter_tree():
@@ -158,6 +162,7 @@ func _procedual_update() -> void:
 	var sdfmaps : Dictionary[Terrain3DRegion, RID] = {}
 	var maps_data : Dictionary[Terrain3DRegion, Image] = {}
 	var rids : Array[RID] = []
+	rids.push_back(pipeline)
 	
 	# Read the Shape Data
 	var shape_data := get_shape_data_buffer(true)
@@ -298,7 +303,10 @@ func _create_grid() -> void:
 	
 	var seed : int
 	if gen_seed.length() > 0:
-		seed = gen_seed.to_int()
+		if gen_seed.is_valid_int():
+			seed = gen_seed.to_int()
+		else:
+			seed = gen_seed.hash()
 	
 	for x in range(-grid_size, grid_size + 1):
 		for z in range(-grid_size, grid_size + 1):
@@ -313,6 +321,9 @@ func _create_grid() -> void:
 			particle_node.explosiveness = 1.0
 			particle_node.process_material = process_material
 			particle_node.use_fixed_seed = true
+			particle_node.cast_shadow = shadow_casting
+			particle_node.visibility_range_end = view_distance + chunk_size
+			particle_node.layers = layers
 			
 			if seed:
 				particle_node.seed = seed
