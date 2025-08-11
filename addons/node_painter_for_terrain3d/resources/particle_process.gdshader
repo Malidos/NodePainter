@@ -20,11 +20,10 @@ uniform int auto_base_texture = 0;
 uniform int auto_overlay_texture = 1;
 uniform float auto_slope = 1.0;
 uniform float auto_height_reduction = 0.1;
-uniform bool enable_projection;
+uniform bool vertical_projection = true;
 uniform float projection_threshold = 0.8;
-uniform float projection_angular_division = 2.0;
 
-uniform bool enable_macro_variation = true;
+uniform bool macro_variation = true;
 uniform vec3 macro_variation1 = vec3(1.0);
 uniform vec3 macro_variation2 = vec3(1.0);
 uniform float macro_variation_slope : hint_range(0.0, 1.0) = 0.333333;
@@ -32,7 +31,6 @@ uniform float noise1_scale = 0.04;
 uniform float noise1_angle = 0.0;
 uniform vec2 noise1_offset = vec2(0.5);
 uniform float noise2_scale = 0.076;
-uniform float noise3_scale = 0.225;
 
 uniform uint _rows = 1;
 uniform float _instance_spacing = 1.0;
@@ -45,34 +43,48 @@ uniform int _region_map_size = 32;
 uniform int _region_map[1024];
 uniform vec2 _region_locations[1024];
 uniform float _texture_uv_scale_array[32];
-uniform float _texture_detile_array[32];
+uniform vec2 _texture_detile_array[32];
 uniform vec4 _texture_color_array[32];
+uniform uint _texture_vertical_projections;
 uniform highp sampler2DArray _height_maps : repeat_disable, hint_default_black;
 uniform highp sampler2DArray _control_maps : repeat_disable, hint_default_white;
 uniform highp sampler2DArray _color_maps : repeat_disable;
 uniform highp sampler2DArray _texture_array_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform highp sampler2DArray _texture_array_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform highp sampler2D noise_texture : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+
+uniform float mipmap_bias : hint_range(0.5, 1.5, 0.01) = 1.0;
+uniform float depth_blur : hint_range(0.0, 35.0, 0.1) = 0.0;
+uniform float bias_distance : hint_range(0.0, 16384.0, 0.1) = 512.0;
 
 // Defined Constants
 #define SKIP_PASS 0
 #define VERTEX_PASS 1
 #define FRAGMENT_PASS 2
 
-struct Material {
-	vec4 alb_ht;
-	int base;
-	int over;
-	float blend;
+struct material {
+	vec4 albedo_height;
+	vec4 normal_rough;
+	float normal_map_depth;
+	float ao_strength;
+	float total_weight;
 };
 
 
-ivec3 get_index_coord(const vec2 uv) {
+#define DECODE_SCALE(control) (0.9 - float(((control >>7u & 0x7u) + 3u) % 8u + 1u) * 0.1)
+#define DECODE_ANGLE(control) float(control >>10u & 0xFu) * -0.392699081698724
+#define DECODE_BLEND(control) float(control >> 14u & 0xFFu) * 0.003921568627450
+#define DECODE_HOLE(control) bool(control >>2u & 0x1u)
+#define TEXTURE_ID_PROJECTED(id) bool((_texture_vertical_projections >> uint(id)) & 0x1u)
+
+
+ivec3 get_index_coord(const vec2 uv, const int search) {
 	vec2 r_uv = round(uv);
 	vec2 o_uv = mod(r_uv,_region_size);
 	ivec2 pos;
 	int bounds, layer_index = -1;
-	for (int i = -1; i < 0; i++) {
-		if ((layer_index == -1 && _background_mode == 0u) || i < 0) {
+	for (int i = -1; i < clamp(search, SKIP_PASS, FRAGMENT_PASS); i++) {
+		if ((layer_index == -1 && _background_mode == 0u ) || i < 0) {
 			r_uv -= i == -1 ? vec2(0.0) : vec2(float(o_uv.x <= o_uv.y), float(o_uv.y <= o_uv.x));
 			pos = ivec2(floor((r_uv) * _region_texel_size)) + (_region_map_size / 2);
 			bounds = int(uint(pos.x | pos.y) < uint(_region_map_size));
@@ -114,132 +126,157 @@ float hash(uint n) {
 	return float(n & uint(0x7fffffffU)) / float(0x7fffffff);
 }
 
+// Takes in descaled (world_space / region_size) world to region space XZ (UV2) coordinates, returns vec3 with:
+// XY: (0. to 1.) coordinates within a region
+// Z: layer index used for texturearrays, -1 if not in a region
+vec3 get_index_uv(const vec2 uv2) {
+	ivec2 pos = ivec2(floor(uv2)) + (_region_map_size / 2);
+	int bounds = int(uint(pos.x | pos.y) < uint(_region_map_size));
+	int layer_index = _region_map[ pos.y * _region_map_size + pos.x ] * bounds - 1;
+	return vec3(uv2 - _region_locations[layer_index], float(layer_index));
+}
+
+
 float random(in vec2 xy) {
 	return fract(sin(dot(xy, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
-// Moves a point around a pivot point.
-vec2 rotate_around(vec2 point, vec2 pivot, float angle){
-	float x = pivot.x + (point.x - pivot.x) * cos(angle) - (point.y - pivot.y) * sin(angle);
-	float y = pivot.y + (point.x - pivot.x) * sin(angle) + (point.y - pivot.y) * cos(angle);
-	return vec2(x, y);
-}
-
-vec4 height_blend(vec4 a_value, float a_height, vec4 b_value, float b_height, float blend) {
-	float ma = max(a_height + (1.0 - blend), b_height + blend) - (1.001 - blend_sharpness);
-	float b1 = max(a_height + (1.0 - blend) - ma, 0.0);
-	float b2 = max(b_height + blend - ma, 0.0);
-	return (a_value * b1 + b_value * b2) / (b1 + b2);
-}
-
-float blend_weights(float weight, float detail) {
-	weight = smoothstep(0.0, 1.0, weight);
-	weight = sqrt(weight * 0.5);
-	float result = max(0.1 * weight, fma(10.0, (weight + detail), 1.0f - (detail + 10.0)));
-	return result;
-}
-
-vec2 detiling(vec2 uv, vec2 uv_center, int mat_id, inout float normal_rotation){
-	if (_texture_detile_array[mat_id] >= 0.001){
-		uv_center = floor(uv_center) + 0.5;
-		float detile = fma(random(uv_center), 2.0, -1.0) * TAU * _texture_detile_array[mat_id]; // -180deg to 180deg
-		uv = rotate_around(uv, uv_center, detile);
-		// Accumulate total rotation for normal rotation
-		normal_rotation += detile;
-	}
-	return uv;
-}
-
-vec2 rotate_plane(vec2 plane, float angle) {
-	float new_x = dot(vec2(cos(angle), sin(angle)), plane);
-	angle = fma(PI, 0.5, angle);
-	float new_y = dot(vec2(cos(angle), sin(angle)), plane);
-	return vec2(new_x, new_y);
+vec2 rotate_vec2(const vec2 v, const vec2 cs) {
+	return vec2(fma(cs.x, v.x,  cs.y * v.y), fma(cs.x, v.y, -cs.y * v.x));
 }
 
 // 2-4 lookups ( 2-6 with dual scaling )
-void get_material(vec2 base_uv, vec4 ddxy, uint control, ivec3 iuv_center, vec3 normal, out Material out_mat, vec3 v_vertex) {
-	out_mat = Material(vec4(0.), 0, 0, 0.0);
-	vec2 uv_center = vec2(iuv_center.xy);
-	int region = iuv_center.z;
+void accumulate_material(vec3 base_ddx, vec3 base_ddy, const float weight, const ivec3 index, const uint control,
+			const vec2 texture_weight, const ivec2 texture_id, const vec3 i_normal, float h, inout material mat, vec3 v_vertex) {
 
-	// Enable Autoshader if outside regions or painted in regions, otherwise manual painted
-	bool auto_shader = region < 0 || bool(control & 0x1u);
-	out_mat.base = int(auto_shader) * auto_base_texture + int(!auto_shader) * int(control >>27u & 0x1Fu);
-	out_mat.over = int(auto_shader) * auto_overlay_texture + int(!auto_shader) * int(control >> 22u & 0x1Fu);
-	out_mat.blend = float(auto_shader) * clamp(
-			round((auto_slope * 2. * ( normal.y - 1.) + 1.) * 255.0) * 0.003921568627450
-			- auto_height_reduction * .01 * v_vertex.y // Reduce as vertices get higher
-			, 0., 1.) +
-			 float(!auto_shader) * float(control >>14u & 0xFFu) * 0.003921568627450; // 1./255.0
+	// Applying scaling before projection reduces the number of multiplys ops required.
+	vec3 i_vertex = v_vertex;
 
-	// Control map scale & rotation, apply to both base and
-	// uv_center. Translate uv center to the current region.
-	uv_center += _region_locations[region] * _region_size;
-	uv_center *= _vertex_spacing;
-	// Define base scale from control map value as array index. 0.5 as baseline.
-	float[8] scale_array = { 0.5, 0.4, 0.3, 0.2, 0.1, 0.8, 0.7, 0.6};
-	float control_scale = scale_array[(control >>7u & 0x7u)];
-	base_uv *= control_scale;
-	uv_center *=  control_scale;
-	ddxy *= control_scale;
+	// Control map scale
+	float control_scale = DECODE_SCALE(control);
+	// tri scaling
+	if (index.z < 0) {
+		control_scale *= 0.3;
+	}
+	base_ddx *= control_scale;
+	base_ddy *= control_scale;
+	i_vertex *= control_scale;
+	h *= control_scale;
 
-	// Apply global uv rotation from control map
-	float uv_rotation = float(control >>10u & 0xFu) / 16. * TAU;
-	base_uv = rotate_around(base_uv, vec2(0), uv_rotation);
-	uv_center = rotate_around(uv_center, vec2(0), uv_rotation);
+	// Index position for detiling.
+	vec2 i_pos = fma(_region_locations[index.z], vec2(_region_size), vec2(index.xy));
+	i_pos *= _vertex_spacing * control_scale;
 
-	vec2 matUV = base_uv;
-	vec4 albedo_ht = vec4(0.);
-	float mat_scale = _texture_uv_scale_array[out_mat.base];
-	float normal_angle = uv_rotation;
-	vec4 dd1 = ddxy;
-
-	// 2 lookups
-	//each time we change scale, recalculate antitiling from baseline to maintain continuity.
-	matUV = detiling(base_uv * mat_scale, uv_center * mat_scale, out_mat.base, normal_angle);
-	dd1.xy = rotate_plane(ddxy.xy, -normal_angle);
-	dd1.zw = rotate_plane(ddxy.zw, -normal_angle);
-	dd1 *= mat_scale;
-	albedo_ht = textureGrad(_texture_array_albedo, vec3(matUV, float(out_mat.base)), dd1.xy, dd1.zw);
-
-
-	// Apply color to base
-	albedo_ht.rgb *= _texture_color_array[out_mat.base].rgb;
-
-	if (out_mat.blend > 0.) {
-		// 2 lookups
-		// Setup overlay texture to blend
-		float mat_scale2 = _texture_uv_scale_array[out_mat.over];
-		float normal_angle2 = uv_rotation;
-		vec2 matUV2 = detiling(base_uv * mat_scale2, uv_center * mat_scale2, out_mat.over, normal_angle2);
-		vec4 dd2 = ddxy * mat_scale2;
-		dd2.xy = rotate_plane(dd2.xy, -normal_angle2);
-		dd2.zw = rotate_plane(dd2.zw, -normal_angle2);
-		vec4 albedo_ht2 = textureGrad(_texture_array_albedo, vec3(matUV2, float(out_mat.over)), dd2.xy, dd2.zw);
-
-		// Apply color to overlay
-		albedo_ht2.rgb *= _texture_color_array[out_mat.over].rgb;
-
-		// Blend overlay and base
-		albedo_ht = height_blend(albedo_ht, albedo_ht.a, albedo_ht2, albedo_ht2.a, out_mat.blend);
-		out_mat.blend = height_blend(vec4(0.0), albedo_ht.a, vec4(1.0), albedo_ht2.a, out_mat.blend).x;
+	// Projection
+	vec2 i_uv = i_vertex.xz;
+	vec4 i_dd = vec4(base_ddx.xz, base_ddy.xz);
+	mat2 p_align = mat2(1.);
+	vec2 p_uv = i_uv;
+	vec4 p_dd = i_dd;
+	vec2 p_pos = i_pos;
+	if (i_normal.y <= projection_threshold && vertical_projection) {
+		// Projected normal map alignment matrix
+		p_align = mat2(vec2(i_normal.z, -i_normal.x), vec2(i_normal.x, i_normal.z));
+		// Fast 45 degree snapping https://iquilezles.org/articles/noatan/
+		vec2 xz = round(normalize(-i_normal.xz) * 1.3065629648763765); // sqrt(1.0 + sqrt(0.5))
+		xz *= abs(xz.x) + abs(xz.y) > 1.5 ? 0.7071067811865475 : 1.0; // sqrt(0.5)
+		xz = vec2(-xz.y, xz.x);
+		p_pos = floor(vec2(dot(i_pos, xz), -h));
+		p_uv = vec2(dot(i_vertex.xz, xz), -i_vertex.y);
+		p_dd.xy = vec2(dot(base_ddx.xz, xz), -base_ddx.y);
+		p_dd.zw = vec2(dot(base_ddy.xz, xz), -base_ddy.y);
 	}
 
-	out_mat.alb_ht = albedo_ht;
-	return;
-}
+	// Control map rotation. Must be applied seperatley from detiling to maintain UV continuity.
+	float c_angle = DECODE_ANGLE(control);
+	vec2 c_cs_angle = vec2(cos(c_angle), sin(c_angle));
+	i_uv = rotate_vec2(i_uv, c_cs_angle);
+	i_pos = rotate_vec2(i_pos, c_cs_angle);
+	p_uv = rotate_vec2(p_uv, c_cs_angle);
+	p_pos = rotate_vec2(p_pos, c_cs_angle);
 
-vec2 project_uv_from_normal(vec3 normal, vec3 v_vertex) {
-	ivec3 v_region = get_index_coord(v_vertex.xz);
-	if (v_region.z < 0 || normal.y >= projection_threshold || !enable_projection) {
-		return v_vertex.xz;
+	// Blend adjustment of Higher ID from Lower ID normal map in world space.
+	float world_normal = 1.;
+	vec3 T = normalize(base_ddx), B = -normalize(base_ddy);
+	// mat3 multiply, reduced to 2x fma and 1x mult.
+	#define FAST_WORLD_NORMAL(n) fma(T, vec3(n.x), fma(B, vec3(n.z), i_normal * vec3(n.y)))
+
+	float blend = DECODE_BLEND(control); // only used for branching.
+	float sharpness = fma(56., blend_sharpness, 8.);
+
+
+	// 1st Texture Asset ID
+	if (blend < 1.0) {
+		const int id = texture_id[0];
+		bool projected = TEXTURE_ID_PROJECTED(id);
+		const float id_w = texture_weight[0];
+		float id_scale = _texture_uv_scale_array[id];
+		vec4 id_dd = fma(p_dd, vec4(float(projected)), i_dd * vec4(float(!projected))) * id_scale;
+
+		// Detiling and Control map rotation
+		vec2 id_pos = fma(p_pos, vec2(float(projected)), i_pos * vec2(float(!projected)));
+		vec2 uv_center = floor(fma(id_pos, vec2(id_scale), vec2(0.5)));
+		vec2 id_detile = fma(random(uv_center), 2.0, -1.0) * _texture_detile_array[id] * TAU;
+		vec2 id_cs_angle = vec2(cos(id_detile.x), sin(id_detile.x));
+		// Apply UV rotation and shift around pivot.
+		vec2 id_uv = fma(p_uv, vec2(float(projected)), i_uv * vec2(float(!projected)));
+		id_uv = rotate_vec2(fma(id_uv, vec2(id_scale), -uv_center), id_cs_angle) + uv_center + id_detile.y - 0.5;
+		// Manual transpose to rotate derivatives and normals counter to uv rotation whilst also
+		// including control map rotation. avoids extra matrix op, and sin/cos calls.
+		id_cs_angle = vec2(
+			fma(id_cs_angle.x, c_cs_angle.x, -id_cs_angle.y * c_cs_angle.y),
+			fma(id_cs_angle.y, c_cs_angle.x, id_cs_angle.x * c_cs_angle.y));
+		// Align derivatives for correct anisotropic filtering
+		id_dd.xy = rotate_vec2(id_dd.xy, id_cs_angle);
+		id_dd.zw = rotate_vec2(id_dd.zw, id_cs_angle);
+
+		vec4 alb = textureGrad(_texture_array_albedo, vec3(id_uv, float(id)), id_dd.xy, id_dd.zw);
+		vec4 nrm = textureGrad(_texture_array_normal, vec3(id_uv, float(id)), id_dd.xy, id_dd.zw);
+		alb.rgb *= _texture_color_array[id].rgb;
+		// Unpack and rotate normal map.
+		nrm.xyz = fma(nrm.xzy, vec3(2.0), vec3(-1.0));
+		nrm.xz = rotate_vec2(nrm.xz, id_cs_angle);
+		nrm.xz = fma((nrm.xz * p_align), vec2(float(projected)), nrm.xz * vec2(float(!projected)));
+
+		world_normal = FAST_WORLD_NORMAL(nrm).y;
+
+		float id_weight = exp2(sharpness * log2(weight + id_w + alb.a)) * weight;
+		mat.albedo_height = fma(alb, vec4(id_weight), mat.albedo_height);
+		mat.total_weight += id_weight;
 	}
-	// Quantize the normal otherwise textures lose continuity across domains
-	vec3 p_normal = normalize(round(normal * projection_angular_division));
-	// Avoid potential singularity
-	vec3 p_tangent = normalize(cross(p_normal, vec3(1e-6, 1e-6, 1.0)));
-	return vec2(dot(v_vertex, p_tangent), dot(v_vertex, normalize(cross(p_tangent, p_normal))));
+
+	// 2nd Texture Asset ID
+	if (blend > 0.0) {
+		const int id = texture_id[1];
+		bool projected = TEXTURE_ID_PROJECTED(id);
+		const float id_w = texture_weight[1];
+		float id_scale = _texture_uv_scale_array[id];
+		vec4 id_dd = fma(p_dd, vec4(float(projected)), i_dd * vec4(float(!projected))) * id_scale;
+
+		// Detiling and Control map rotation
+		vec2 id_pos = fma(p_pos, vec2(float(projected)), i_pos * vec2(float(!projected)));
+		vec2 uv_center = floor(fma(id_pos, vec2(id_scale), vec2(0.5)));
+		vec2 id_detile = fma(random(uv_center), 2.0, -1.0) * _texture_detile_array[id] * TAU;
+		vec2 id_cs_angle = vec2(cos(id_detile.x), sin(id_detile.x));
+		// Apply UV rotation and shift around pivot.
+		vec2 id_uv = fma(p_uv, vec2(float(projected)), i_uv * vec2(float(!projected)));
+		id_uv = rotate_vec2(fma(id_uv, vec2(id_scale), -uv_center), id_cs_angle) + uv_center + id_detile.y - 0.5;
+		// Manual transpose to rotate derivatives and normals counter to uv rotation whilst also
+		// including control map rotation. avoids extra matrix op, and sin/cos calls.
+		id_cs_angle = vec2(
+			fma(id_cs_angle.x, c_cs_angle.x, -id_cs_angle.y * c_cs_angle.y),
+			fma(id_cs_angle.y, c_cs_angle.x, id_cs_angle.x * c_cs_angle.y));
+		// Align derivatives for correct anisotropic filtering
+		id_dd.xy = rotate_vec2(id_dd.xy, id_cs_angle);
+		id_dd.zw = rotate_vec2(id_dd.zw, id_cs_angle);
+
+		vec4 alb = textureGrad(_texture_array_albedo, vec3(id_uv, float(id)), id_dd.xy, id_dd.zw);
+		alb.rgb *= _texture_color_array[id].rgb;
+
+		float id_weight = exp2(sharpness * log2(weight + id_w + alb.a * clamp(world_normal, 0., 1.))) * weight;
+		mat.albedo_height = fma(alb, vec4(id_weight), mat.albedo_height);
+		mat.total_weight += id_weight;
+	}
 }
 
 
@@ -256,9 +293,13 @@ void start() {
 
 	// Part from Terrain3D
 	// Lookup offsets, ID and blend weight
+	vec2 uv = position.xz * _vertex_density;
+	vec2 uv2 = fma(uv, vec2(_region_texel_size), vec2(0.5 * _region_texel_size));
+
+	vec3 region_uv = get_index_uv(uv2);
 	const vec3 offsets = vec3(0, 1, 2);
-	vec2 index_id = floor(position.xz * _vertex_density);
-	vec2 weight = fract(position.xz * _vertex_density);
+	vec2 index_id = floor(uv);
+	vec2 weight = fract(uv);
 	vec2 invert = 1.0 - weight;
 	vec4 weights = vec4(
 		invert.x * weight.y, // 0
@@ -269,17 +310,27 @@ void start() {
 
 	ivec3 index[4];
 	// Map lookups
-	index[0] = get_index_coord(index_id + offsets.xy);
-	index[1] = get_index_coord(index_id + offsets.yy);
-	index[2] = get_index_coord(index_id + offsets.yx);
-	index[3] = get_index_coord(index_id + offsets.xx);
+	index[0] = get_index_coord(index_id + offsets.xy, 2);
+	index[1] = get_index_coord(index_id + offsets.yy, 2);
+	index[2] = get_index_coord(index_id + offsets.yx, 2);
+	index[3] = get_index_coord(index_id + offsets.xx, 2);
+
+	vec3 base_ddx = vec3(color_sampling_blur);//dFdxCoarse(v_vertex);
+	vec3 base_ddy = vec3(color_sampling_blur);//dFdyCoarse(v_vertex);
+
+	// Terrain normals
+	vec3 index_normal[4];
+	float h[4];
+	// allows additional derivatives, eg world noise, brush previews etc
+	float u = 0.0;
+	float v = 0.0;
 
 	// Read control map
-	uint control[4];
-	control[0] = floatBitsToUint(texelFetch(_control_maps, index[0], 0).r);
-	control[1] = floatBitsToUint(texelFetch(_control_maps, index[1], 0).r);
-	control[2] = floatBitsToUint(texelFetch(_control_maps, index[2], 0).r);
-	control[3] = floatBitsToUint(texelFetch(_control_maps, index[3], 0).r);
+	uvec4 control = uvec4(
+		floatBitsToUint(texelFetch(_control_maps, index[0], 0).r),
+		floatBitsToUint(texelFetch(_control_maps, index[1], 0).r),
+		floatBitsToUint(texelFetch(_control_maps, index[2], 0).r),
+		floatBitsToUint(texelFetch(_control_maps, index[3], 0).r));
 
 	float sdfm[4];
 	sdfm[0] = texelFetch(_sdf_maps, index[0], 0).r; // 0 (0,1)
@@ -287,26 +338,37 @@ void start() {
 	sdfm[2] = texelFetch(_sdf_maps, index[2], 0).r; // 2 (1,0)
 	sdfm[3] = texelFetch(_sdf_maps, index[3], 0).r; // 3 (0,0)
 
-	highp float h[8];
-	h[0] = texelFetch(_height_maps, index[0], 0).r; // 0 (0,1)
-	h[1] = texelFetch(_height_maps, index[1], 0).r; // 1 (1,1)
-	h[2] = texelFetch(_height_maps, index[2], 0).r; // 2 (1,0)
-	h[3] = texelFetch(_height_maps, index[3], 0).r; // 3 (0,0)
-	h[4] = texelFetch(_height_maps, get_index_coord(index_id + offsets.yz), 0).r; // 4 (1,2)
-	h[5] = texelFetch(_height_maps, get_index_coord(index_id + offsets.zy), 0).r; // 5 (2,1)
-	h[6] = texelFetch(_height_maps, get_index_coord(index_id + offsets.zx), 0).r; // 6 (2,0)
-	h[7] = texelFetch(_height_maps, get_index_coord(index_id + offsets.xz), 0).r; // 7 (0,2)
-	vec3 index_normal[4];
-	index_normal[0] = vec3(h[0] - h[1], _vertex_spacing, h[0] - h[7]);
-	index_normal[1] = vec3(h[1] - h[5], _vertex_spacing, h[1] - h[4]);
-	index_normal[2] = vec3(h[2] - h[6], _vertex_spacing, h[2] - h[1]);
-	index_normal[3] = vec3(h[3] - h[2], _vertex_spacing, h[3] - h[0]);
+	// Re-use index[] for the first lookups, skipping some math. 3 lookups
+	h[3] = texelFetch(_height_maps, index[3], 0).r; // 0 (0,0)
+	h[2] = texelFetch(_height_maps, index[2], 0).r; // 1 (1,0)
+	h[1] = texelFetch(_height_maps, index[1], 0).r; // 3 (1,1)
+	h[0] = texelFetch(_height_maps, index[0], 0).r; // 2 (0,1)
+
+
+	// Adjust derivatives for mipmap bias and depth blur effect
+	float bias = mix(mipmap_bias,
+		depth_blur + 1.,
+		smoothstep(0.0, 1.0, (1.0 - bias_distance) * 0.0009765625));
+	base_ddx *= bias;
+	base_ddy *= bias;
+
+	float h_4 = texelFetch(_height_maps, get_index_coord(index_id + offsets.yz, 2), 0).r; // 4 (1,2)
+	float h_5 = texelFetch(_height_maps, get_index_coord(index_id + offsets.zy, 2), 0).r; // 5 (2,1)
+	float h_6 = texelFetch(_height_maps, get_index_coord(index_id + offsets.zx, 2), 0).r; // 6 (2,0)
+	float h_7 = texelFetch(_height_maps, get_index_coord(index_id + offsets.xz, 2), 0).r; // 7 (0,2)
+
+	// Calculate the normal for the remaining index ids.
+	index_normal[0] = normalize(vec3(h[0] - h[1] + u, _vertex_spacing, h[0] - h_7 + v));
+	index_normal[1] = normalize(vec3(h[1] - h_5 + u, _vertex_spacing, h[1] - h_4 + v));
+	index_normal[2] = normalize(vec3(h[2] - h_6 + u, _vertex_spacing, h[2] - h[1] + v));
+	index_normal[3] = normalize(vec3(h[3] - h[2] + u, _vertex_spacing, h[3] - h[0] + v));
+
 	vec3 w_normal = normalize(
 		index_normal[0] * weights[0] +
 		index_normal[1] * weights[1] +
 		index_normal[2] * weights[2] +
 		index_normal[3] * weights[3]);
-	// End of Terrain 3D Lookups
+
 	position.y =
 		h[0] * weights[0] +
 		h[1] * weights[1] +
@@ -335,8 +397,7 @@ void start() {
 	TRANSFORM[3].xyz = position;
 
 	// Particle Filtering
-	uvec4 v_control = uvec4(control[0], control[1], control[2], control[3]);
-	bool hole = any(bvec4(v_control >> uvec4(2u) & uvec4(0x1u)));
+	bool hole = any(bvec4(control >> uvec4(2u) & uvec4(0x1u)));
 
 	if (slope_restrict >= w_normal.y * sign(slope_restrict) + (r - 0.5) * condition_dithering
 			|| position.y < min_height + (r - 0.5) * condition_dithering * 10.0
@@ -348,71 +409,106 @@ void start() {
 	vec3 col = vec3(1.0);
 	// Finished Position -> Colorsampling
 	if (do_color_sampling && ACTIVE) {
-		// Read color map
-		#define COLOR_MAP vec4(1., 1., 1., 0.5)
-		highp vec4 c[4];
-		c[0] = index[0].z >= 0 ? texelFetch(_color_maps, index[0], 0) : COLOR_MAP; // 0 (0,1)
-		c[1] = index[1].z >= 0 ? texelFetch(_color_maps, index[1], 0) : COLOR_MAP; // 1 (1,1)
-		c[2] = index[2].z >= 0 ? texelFetch(_color_maps, index[2], 0) : COLOR_MAP; // 2 (1,0)
-		c[3] = index[3].z >= 0 ? texelFetch(_color_maps, index[3], 0) : COLOR_MAP; // 3 (0,0)
+		vec4 col_map[4];
+		#define COLOR_MAP_DEF vec4(1.0, 1.0, 1.0, 0.5)
+		col_map[3] = texelFetch(_color_maps, index[3], 0);
+		col_map[0] = texelFetch(_color_maps, index[0], 0);
+		col_map[1] = texelFetch(_color_maps, index[1], 0);
+		col_map[2] = texelFetch(_color_maps, index[2], 0);
+
 		vec4 color_map =
-			c[0] * weights[0] +
-			c[1] * weights[1] +
-			c[2] * weights[2] +
-			c[3] * weights[3] ;
+			col_map[0] * weights[0] +
+			col_map[1] * weights[1] +
+			col_map[2] * weights[2] +
+			col_map[3] * weights[3] ;
 
-		Material mat[4];
-		vec4 faked_derivatives = vec4(color_sampling_blur);
-		get_material(project_uv_from_normal(index_normal[0], TRANSFORM[3].xyz), faked_derivatives, control[0], index[0], w_normal, mat[0], TRANSFORM[3].xyz);
-		get_material(project_uv_from_normal(index_normal[1], TRANSFORM[3].xyz), faked_derivatives, control[1], index[1], w_normal, mat[1], TRANSFORM[3].xyz);
-		get_material(project_uv_from_normal(index_normal[2], TRANSFORM[3].xyz), faked_derivatives, control[2], index[2], w_normal, mat[2], TRANSFORM[3].xyz);
-		get_material(project_uv_from_normal(index_normal[3], TRANSFORM[3].xyz), faked_derivatives, control[3], index[3], w_normal, mat[3], TRANSFORM[3].xyz);
+		{
+			// Auto blend calculation
+			float auto_blend = clamp(fma(auto_slope * 2.0, (w_normal.y - 1.0), 1.0)
+				- auto_height_reduction * 0.01 * position.y, 0.0, 1.0);
+			// Enable Autoshader if outside regions or painted in regions, otherwise manual painted
+			uvec4 is_auto = (control & uvec4(0x1u)) | uvec4(uint(region_uv.z < 0.0));
+			uint u_auto =
+				((uint(auto_base_texture) & 0x1Fu) << 27u) |
+				((uint(auto_overlay_texture) & 0x1Fu) << 22u) |
+				((uint(fma(auto_blend, 255.0 , 0.5)) & 0xFFu) << 14u);
+			control = control * (1u - is_auto) + u_auto * is_auto;
+		}
 
-		// rebuild weights for detail and noise blending
-		float noise3 = texture(noise_texture, TRANSFORM[3].xz * noise3_scale).r * blend_sharpness;
-		#define PARABOLA(x) (4.0 * x * (1.0 - x))
-		weights = smoothstep(0, 1, weights);
-		weights = vec4(
-			blend_weights(weights.x + PARABOLA(weights.x) * noise3, mat[0].alb_ht.a),
-			blend_weights(weights.y + PARABOLA(weights.y) * noise3, mat[1].alb_ht.a),
-			blend_weights(weights.z + PARABOLA(weights.z) * noise3, mat[2].alb_ht.a),
-			blend_weights(weights.w + PARABOLA(weights.w) * noise3, mat[3].alb_ht.a)
-		);
-		#undef PARABOLA
-		// renormalize weights
-		weights *= 1.0 / (weights.x + weights.y + weights.z + weights.w);
+		// Texture weights
+		// Vectorised Deocode of all texture IDs, then swizzle to per index mapping.
+		// Passed to accumulate_material to avoid repeated decoding.
+		ivec4 t_id[2] = {ivec4(control >> uvec4(27u) & uvec4(0x1Fu)),
+			ivec4(control >> uvec4(22u) & uvec4(0x1Fu))};
+		ivec2 texture_ids[4] = ivec2[4](
+			ivec2(t_id[0].x, t_id[1].x),
+			ivec2(t_id[0].y, t_id[1].y),
+			ivec2(t_id[0].z, t_id[1].z),
+			ivec2(t_id[0].w, t_id[1].w));
 
-		vec4 albedo_height =
-			mat[0].alb_ht * weights[0] +
-			mat[1].alb_ht * weights[1] +
-			mat[2].alb_ht * weights[2] +
-			mat[3].alb_ht * weights[3] ;
+		// uninterpolated weights.
+		vec4 weights_id_1 = vec4(control >> uvec4(14u) & uvec4(0xFFu)) * 0.003921568627450;
+		vec4 weights_id_0 = 1.0 - weights_id_1;
+		vec2 t_weights[4] = vec2[4](
+					vec2(weights_id_0[0], weights_id_1[0]),
+					vec2(weights_id_0[1], weights_id_1[1]),
+					vec2(weights_id_0[2], weights_id_1[2]),
+					vec2(weights_id_0[3], weights_id_1[3]));
+		// interpolated weights
+		#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+		t_weights = {vec2(0), vec2(0), vec2(0), vec2(0)};
+		weights_id_0 *= weights;
+		weights_id_1 *= weights;
+		for (int i = 0; i < 4; i++) {
+			vec2 w_0 = vec2(weights_id_0[i]);
+			vec2 w_1 = vec2(weights_id_1[i]);
+			ivec2 id_0 = texture_ids[i].xx;
+			ivec2 id_1 = texture_ids[i].yy;
+			t_weights[0] += fma(w_0, vec2(equal(texture_ids[0], id_0)), w_1 * vec2(equal(texture_ids[0], id_1)));
+			t_weights[1] += fma(w_0, vec2(equal(texture_ids[1], id_0)), w_1 * vec2(equal(texture_ids[1], id_1)));
+			t_weights[2] += fma(w_0, vec2(equal(texture_ids[2], id_0)), w_1 * vec2(equal(texture_ids[2], id_1)));
+			t_weights[3] += fma(w_0, vec2(equal(texture_ids[3], id_0)), w_1 * vec2(equal(texture_ids[3], id_1)));
+		}
+		#endif
 
-		uint base_allowed = _texture_restrictions >> uint(mat[3].base) & 0x1u;
-		uint overlay_allowed = _texture_restrictions >> uint(mat[3].over) & 0x1u;
+		uint base_allowed = _texture_restrictions >> uint(texture_ids[3][0]) & 0x1u;
+		uint overlay_allowed = _texture_restrictions >> uint(texture_ids[3][1]) & 0x1u;
 
-		if (mat[3].blend < 0.45 + (r - 0.5) * condition_dithering) {
+		if (DECODE_BLEND(control[3]) < 0.45 + (r - 0.5) * condition_dithering) {
 			if(base_allowed == 0x1u) {ACTIVE = false;}
 		} else {
 			if(overlay_allowed == 0x1u) {ACTIVE = false;}
 		}
 
+		// Struct to accumulate all texture data.
+		material mat = material(vec4(0.0), vec4(0.0), 0., 0., 0.);
+
+		accumulate_material(base_ddx, base_ddy, weights[3], index[3], control[3], t_weights[3],
+			texture_ids[3], index_normal[3], h[3], mat, position);
+		accumulate_material(base_ddx, base_ddy, weights[2], index[2], control[2], t_weights[2],
+			texture_ids[2], index_normal[2], h[2], mat, position);
+		accumulate_material(base_ddx, base_ddy, weights[1], index[1], control[1], t_weights[1],
+			texture_ids[1], index_normal[1], h[1], mat, position);
+		accumulate_material(base_ddx, base_ddy, weights[0], index[0], control[0], t_weights[0],
+			texture_ids[0], index_normal[0], h[0], mat, position);
+
+		// normalize accumulated values back to 0.0 - 1.0 range.
+		float weight_inv = 1.0 / mat.total_weight;
+		mat.albedo_height *= weight_inv;
+
+		// Macro variation. 2 lookups
 		vec3 macrov = vec3(1.);
-		if (enable_macro_variation) {
-			float noise1 = texture(noise_texture, rotate_around(TRANSFORM[3].xz * noise1_scale * .1, vec2(0.0), noise1_angle) + noise1_offset).r;
-			float noise2 = texture(noise_texture, TRANSFORM[3].xz * noise2_scale * .1).r;
+		if (macro_variation) {
+			float noise1 = texture(noise_texture, rotate_vec2(fma(uv, vec2(noise1_scale * .1), noise1_offset) , vec2(cos(noise1_angle), sin(noise1_angle)))).r;
+			float noise2 = texture(noise_texture, uv * noise2_scale * .1).r;
 			macrov = mix(macro_variation1, vec3(1.), noise1);
 			macrov *= mix(macro_variation2, vec3(1.), noise2);
 			macrov = mix(vec3(1.0), macrov, clamp(w_normal.y + macro_variation_slope, 0., 1.));
 		}
 
-		col = albedo_height.rgb * color_map.rgb * macrov;
+		col = mat.albedo_height.rgb * color_map.rgb * macrov;
 
 	}
 
 	COLOR = vec4(col, 1.0);
-}
-
-void process() {
-	// Called every frame on existing particles (according to the Fixed FPS property).
 }

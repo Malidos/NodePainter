@@ -104,7 +104,7 @@ const compute_shader_file := preload("res://addons/node_painter_for_terrain3d/re
 const gpu_shader : Shader = preload("res://addons/node_painter_for_terrain3d/resources/particle_process.gdshader")
 const particle_fps := 20
 var last_pos := Vector2i.ZERO
-var particle_instances : Dictionary[Vector2i, GPUParticles3D]
+@export var particle_instances : Dictionary[Vector2i, GPUParticles3D]
 var grid_size : int = 1
 var rows : int = 1
 var __create_new_grid := false
@@ -379,6 +379,8 @@ func _update_process_uniforms() -> void:
 		RenderingServer.material_set_param(rid, "_control_maps", terrainNode.data.get_control_maps_rid())
 		RenderingServer.material_set_param(rid, "_color_maps", terrainNode.data.get_color_maps_rid())
 		RenderingServer.material_set_param(rid, "_texture_array_albedo", terrainNode.assets.get_albedo_array_rid())
+		RenderingServer.material_set_param(rid, "_texture_array_normal", terrainNode.assets.get_normal_array_rid())
+		RenderingServer.material_set_param(rid, "_texture_vertical_projections", terrainNode.assets.get_texture_vertical_projections())
 		RenderingServer.material_set_param(rid, "noise_texture", params["noise_texture"].get_rid())
 		
 		RenderingServer.material_set_param(rid, "blend_sharpness", params["blend_sharpness"])
@@ -386,10 +388,9 @@ func _update_process_uniforms() -> void:
 		RenderingServer.material_set_param(rid, "auto_overlay_texture", params["auto_overlay_texture"])
 		RenderingServer.material_set_param(rid, "auto_slope", params["auto_slope"])
 		RenderingServer.material_set_param(rid, "auto_height_reduction", params["auto_height_reduction"])
-		RenderingServer.material_set_param(rid, "enable_projection", params["enable_projection"])
+		RenderingServer.material_set_param(rid, "vertical_projection", params["vertical_projection"])
 		RenderingServer.material_set_param(rid, "projection_threshold", params["projection_threshold"])
-		RenderingServer.material_set_param(rid, "projection_angular_division", params["projection_angular_division"])
-		RenderingServer.material_set_param(rid, "enable_macro_variation", params["enable_macro_variation"])
+		RenderingServer.material_set_param(rid, "enable_macro_variation", params["macro_variation"])
 		RenderingServer.material_set_param(rid, "macro_variation1", params["macro_variation1"])
 		RenderingServer.material_set_param(rid, "macro_variation2", params["macro_variation2"])
 		RenderingServer.material_set_param(rid, "macro_variation_slope", params["macro_variation_slope"])
@@ -397,7 +398,6 @@ func _update_process_uniforms() -> void:
 		RenderingServer.material_set_param(rid, "noise1_angle", params["noise1_angle"])
 		RenderingServer.material_set_param(rid, "noise1_offset", params["noise1_offset"])
 		RenderingServer.material_set_param(rid, "noise2_scale", params["noise2_scale"])
-		RenderingServer.material_set_param(rid, "noise3_scale", params["noise3_scale"])
 		
 		if _sdf_maps:
 			process_material.set_shader_parameter("_sdf_maps", _sdf_maps)
